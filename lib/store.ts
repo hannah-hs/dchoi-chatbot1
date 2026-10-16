@@ -30,12 +30,22 @@ async function readLocal(): Promise<LocalDB> {
     return { kv: {}, users: {}, messages: {} };
   }
 }
-async function writeLocal(db: LocalDB) {
+// 여러 요청이 동시에 파일을 고치면 내용이 깨지므로, 고치는 작업은 한 줄로 세워서 하나씩 처리합니다.
+let localQueue: Promise<unknown> = Promise.resolve();
+function updateLocal(change: (db: LocalDB) => void): Promise<void> {
   if (process.env.VERCEL) {
     throw new Error("Vercel 에서는 Upstash Redis 연결이 필요합니다. 안내서(README)의 'Redis 연결' 단계를 확인하세요.");
   }
-  await fs.mkdir(path.dirname(DB_FILE), { recursive: true });
-  await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+  const run = localQueue.then(async () => {
+    const db = await readLocal();
+    change(db);
+    await fs.mkdir(path.dirname(DB_FILE), { recursive: true });
+    const tmp = `${DB_FILE}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(db, null, 2));
+    await fs.rename(tmp, DB_FILE); // 다 쓴 다음에 한 번에 바꿔치기
+  });
+  localQueue = run.catch(() => {});
+  return run;
 }
 
 // ---------- 공통 key-value ----------
@@ -48,9 +58,9 @@ async function setKV<T>(key: string, value: T) {
     await redis.set(key, value);
     return;
   }
-  const db = await readLocal();
-  db.kv[key] = value;
-  await writeLocal(db);
+  await updateLocal((db) => {
+    db.kv[key] = value;
+  });
 }
 
 // ---------- 상품 / Q&A / 규칙 ----------
@@ -95,9 +105,9 @@ export async function saveUser(user: ChatUser) {
     await redis.set(`user-email:${user.email}`, user.id);
     return;
   }
-  const db = await readLocal();
-  db.users[user.id] = user;
-  await writeLocal(db);
+  await updateLocal((db) => {
+    db.users[user.id] = user;
+  });
 }
 
 export async function listUsers(): Promise<ChatUser[]> {
@@ -115,10 +125,10 @@ export async function deleteUser(id: string) {
     if (user) await redis.del(`user-email:${user.email}`);
     return;
   }
-  const db = await readLocal();
-  delete db.users[id];
-  delete db.messages[id];
-  await writeLocal(db);
+  await updateLocal((db) => {
+    delete db.users[id];
+    delete db.messages[id];
+  });
 }
 
 // ---------- 대화 기록 ----------
@@ -132,7 +142,7 @@ export async function appendMessages(userId: string, msgs: ChatMessage[]) {
     await redis.rpush(`msgs:${userId}`, ...msgs);
     return;
   }
-  const db = await readLocal();
-  db.messages[userId] = [...(db.messages[userId] ?? []), ...msgs];
-  await writeLocal(db);
+  await updateLocal((db) => {
+    db.messages[userId] = [...(db.messages[userId] ?? []), ...msgs];
+  });
 }
