@@ -58,5 +58,6 @@ export interface ChatUser {
   warnings: number;
   blocked: boolean;
   blockedReason?: string;
+  unblockedAt?: string; // 운영자가 차단을 푼 시각. 이 이후 대화만 챗봇이 참고합니다.
   lastMood?: Mood;
 }

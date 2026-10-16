@@ -3,8 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { getUserSession } from "@/lib/auth";
 import { askClaude, MissingApiKeyError } from "@/lib/claude";
-import { appendMessages, getMessages, getProducts, getQA, getRules, getUser, saveUser } from "@/lib/store";
-import type { ChatMessage } from "@/lib/types";
+import { getProducts, getQA, getRules, getUserWithMessages, saveChatTurn } from "@/lib/store";
+import type { ChatMessage, ChatUser } from "@/lib/types";
 
 export const maxDuration = 60;
 
@@ -12,7 +12,8 @@ const BLOCKED_REPLY = "원활한 상담을 위해 대화가 제한되었습니�
 
 export async function POST(req: Request) {
   const id = await getUserSession();
-  const user = id ? await getUser(id) : null;
+  const rec = id ? await getUserWithMessages(id) : null;
+  const user = rec?.user ?? null;
   if (!user) return NextResponse.json({ error: "먼저 이름과 이메일을 입력해 주세요." }, { status: 401 });
   if (user.blocked) return NextResponse.json({ reply: BLOCKED_REPLY, blocked: true });
 
@@ -20,7 +21,10 @@ export async function POST(req: Request) {
   const text = (body.message ?? "").trim().slice(0, 2000);
   if (!text) return NextResponse.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
 
-  const [history, products, qa, rules] = await Promise.all([getMessages(user.id), getProducts(), getQA(), getRules()]);
+  const allHistory = rec?.messages ?? [];
+  const [products, qa, rules] = await Promise.all([getProducts(), getQA(), getRules()]);
+  // 운영자가 차단을 풀어준 경우, 그 전의 대화는 챗봇이 참고하지 않고 새로 시작합니다. (기록은 운영자 화면에 남아 있어요)
+  const history = user.unblockedAt ? allHistory.filter((m) => m.at > user.unblockedAt!) : allHistory;
 
   let result;
   try {
@@ -37,23 +41,28 @@ export async function POST(req: Request) {
   }
 
   const now = new Date().toISOString();
-  const updated = { ...user, lastActiveAt: now, lastMood: result.mood };
-  if (result.risk === "경고") updated.warnings += 1;
-  if (result.risk === "차단" || updated.warnings >= rules.warningLimit) {
-    updated.blocked = true;
-    updated.blockedReason = result.riskReason || `경고 ${updated.warnings}회 누적`;
-  }
-  const reply = updated.blocked ? BLOCKED_REPLY : result.reply;
+  const willBlock = (u: ChatUser) => result.risk === "차단" || u.warnings + (result.risk === "경고" ? 1 : 0) >= rules.warningLimit;
+  const reply = willBlock(user) ? BLOCKED_REPLY : result.reply;
 
   const msgs: ChatMessage[] = [
     { role: "user", content: text, at: now, mood: result.mood, risk: result.risk, riskReason: result.riskReason },
     { role: "assistant", content: reply, at: new Date().toISOString() },
   ];
+  let blocked = willBlock(user);
   try {
-    await Promise.all([appendMessages(user.id, msgs), saveUser(updated)]);
+    const saved = await saveChatTurn(user.id, msgs, (u) => {
+      const next = { ...u, lastActiveAt: now, lastMood: result.mood };
+      if (result.risk === "경고") next.warnings += 1;
+      if (willBlock(u)) {
+        next.blocked = true;
+        next.blockedReason = result.riskReason || `경고 ${next.warnings}회 누적`;
+      }
+      return next;
+    });
+    blocked = saved.user.blocked;
   } catch (error) {
     console.error("save chat failed", error);
   }
 
-  return NextResponse.json({ reply, blocked: updated.blocked });
+  return NextResponse.json({ reply, blocked });
 }

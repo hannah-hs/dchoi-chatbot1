@@ -8,14 +8,14 @@
     "start": "next start",
     "scrape": "tsx scripts/scrape.ts",
     "excel": "tsx scripts/build-excel.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "tsx scripts/e2e.ts"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
-    "@upstash/redis": "^1.39.0",
     "exceljs": "^4.4.0",
     "next": "^16.4.2",
     "react": "^19.3.1",

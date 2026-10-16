@@ -173,7 +173,7 @@ function UsersTab() {
         </div>
       </div>
       {storageMode === "local-file" && (
-        <p className="muted-note">※ 지금은 내 컴퓨터 파일(.data/db.json)에 저장 중입니다. Vercel 에서는 Upstash Redis 를 연결해야 합니다.</p>
+        <p className="muted-note">※ 지금은 내 컴퓨터 파일(.data/)에 저장 중입니다. Vercel 에서는 GITHUB_TOKEN 을 넣으면 비공개 GitHub 데이터 레포에 저장돼요.</p>
       )}
       <div className="split">
         <section className="panel">

@@ -1,160 +1,190 @@
-// 데이터 저장소
-// - Vercel 에서는 Upstash Redis(무료)를 사용합니다. (환경변수 KV_REST_API_URL / KV_REST_API_TOKEN 또는 UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)
-// - 내 컴퓨터에서 테스트할 때는 .data/db.json 파일에 저장합니다.
-import { Redis } from "@upstash/redis";
+// 데이터 저장 (따로 데이터베이스 없이 GitHub 비공개 데이터 레포에 파일로 저장합니다)
+//
+// 데이터 레포 안의 파일 구성
+//   knowledge/학습데이터.xlsx   챗봇이 공부하는 엑셀 (상품목록 + Q&A 시트). 운영자가 Q&A 를 고치면 이 파일이 바뀝니다.
+//                               아직 없으면 코드 레포의 data/dchoi09_전집_학습데이터.xlsx 를 사용합니다.
+//   config/rules.json           챗봇 규칙
+//   users/<사용자ID>.json       사용자 정보 + 대화 기록 (사용자 1명 = 파일 1개)
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import seedProducts from "@/data/products.json";
-import seedQA from "@/data/qa.json";
 import { DEFAULT_RULES } from "./default-rules";
+import { buildWorkbook, readWorkbook } from "./excel";
+import { FileConflictError, files, readJson, STORAGE_MISSING_MESSAGE, updateJson, withFileLock } from "./files";
 import type { ChatMessage, ChatUser, Product, QAItem, Rules } from "./types";
 
-// Vercel 에서 Upstash 를 연결할 때 이름 앞에 다른 글자(예: STORAGE_)를 붙였어도 찾을 수 있게 끝부분으로 찾습니다.
-function findEnv(suffixes: string[]): string | undefined {
-  for (const suffix of suffixes) {
-    if (process.env[suffix]) return process.env[suffix];
-    const key = Object.keys(process.env).find((k) => k.endsWith(`_${suffix}`) && process.env[k]);
-    if (key) return process.env[key];
-  }
-  return undefined;
-}
-const redisUrl = findEnv(["KV_REST_API_URL", "UPSTASH_REDIS_REST_URL"]);
-const redisToken = findEnv(["KV_REST_API_TOKEN", "UPSTASH_REDIS_REST_TOKEN"]);
-const redis = redisUrl && redisToken ? new Redis({ url: redisUrl, token: redisToken }) : null;
+export { STORAGE_MISSING_MESSAGE };
+export const storageMode = files.kind;
 
-export const storageMode = redis ? "redis" : "local-file";
+export const BUNDLED_EXCEL = path.join(process.cwd(), "data", "dchoi09_전집_학습데이터.xlsx");
+const KNOWLEDGE_FILE = "knowledge/학습데이터.xlsx";
+const RULES_FILE = "config/rules.json";
+const userFile = (id: string) => `users/${id}.json`;
 
-export const STORAGE_MISSING_MESSAGE =
-  "저장소(Upstash Redis)가 연결되지 않았습니다. Vercel 프로젝트 → Storage 에서 Upstash for Redis 를 연결한 뒤 Redeploy 해 주세요.";
-
-// ---------- 내 컴퓨터용 파일 저장 ----------
-interface LocalDB {
-  kv: Record<string, unknown>;
-  users: Record<string, ChatUser>;
-  messages: Record<string, ChatMessage[]>;
-}
-const DB_FILE = path.join(process.cwd(), ".data", "db.json");
-
-async function readLocal(): Promise<LocalDB> {
-  try {
-    return JSON.parse(await fs.readFile(DB_FILE, "utf8")) as LocalDB;
-  } catch {
-    return { kv: {}, users: {}, messages: {} };
-  }
-}
-// 여러 요청이 동시에 파일을 고치면 내용이 깨지므로, 고치는 작업은 한 줄로 세워서 하나씩 처리합니다.
-let localQueue: Promise<unknown> = Promise.resolve();
-function updateLocal(change: (db: LocalDB) => void): Promise<void> {
-  if (process.env.VERCEL) {
-    return Promise.reject(new Error(STORAGE_MISSING_MESSAGE));
-  }
-  const run = localQueue.then(async () => {
-    const db = await readLocal();
-    change(db);
-    await fs.mkdir(path.dirname(DB_FILE), { recursive: true });
-    const tmp = `${DB_FILE}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(db, null, 2));
-    await fs.rename(tmp, DB_FILE); // 다 쓴 다음에 한 번에 바꿔치기
-  });
-  localQueue = run.catch(() => {});
-  return run;
+interface UserRecord {
+  user: ChatUser;
+  messages: ChatMessage[];
 }
 
-// ---------- 공통 key-value ----------
-async function getKV<T>(key: string): Promise<T | null> {
-  if (redis) return (await redis.get<T>(key)) ?? null;
-  return ((await readLocal()).kv[key] as T) ?? null;
-}
-async function setKV<T>(key: string, value: T) {
-  if (redis) {
-    await redis.set(key, value);
-    return;
-  }
-  await updateLocal((db) => {
-    db.kv[key] = value;
-  });
+// ---------- 엑셀 (상품목록 + Q&A) ----------
+interface Knowledge {
+  products: Product[];
+  qa: QAItem[];
+  sha: string | null; // 데이터 레포 엑셀의 버전 (없으면 null = 기본 엑셀 사용 중)
 }
 
-// ---------- 상품 / Q&A / 규칙 ----------
+let knowledgeCache: { key: string; value: Knowledge } | null = null;
+
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+async function parseExcel(buf: Buffer, sha: string | null): Promise<Knowledge> {
+  const { products, qa } = await readWorkbook(toArrayBuffer(buf));
+  return { products: products ?? [], qa: qa ?? [], sha };
+}
+
+export async function getKnowledge(): Promise<Knowledge> {
+  const remote = await files.read(KNOWLEDGE_FILE);
+  const key = remote ? `remote:${remote.sha}` : "bundled";
+  if (knowledgeCache?.key === key) return knowledgeCache.value; // 바뀌지 않았으면 다시 읽지 않음
+  const value = remote ? await parseExcel(remote.content, remote.sha) : await parseExcel(await fs.readFile(BUNDLED_EXCEL), null);
+  knowledgeCache = { key, value };
+  return value;
+}
+
 export async function getProducts(): Promise<Product[]> {
-  return (await getKV<Product[]>("products")) ?? (seedProducts as Product[]);
+  return (await getKnowledge()).products;
 }
-export async function saveProducts(products: Product[]) {
-  await setKV("products", products);
-}
-
 export async function getQA(): Promise<QAItem[]> {
-  return (await getKV<QAItem[]>("qa")) ?? (seedQA as QAItem[]);
-}
-export async function saveQA(items: QAItem[]) {
-  await setKV("qa", items);
+  return (await getKnowledge()).qa;
 }
 
+/** 상품목록/Q&A 를 바꿔서 데이터 레포의 엑셀을 새로 저장합니다. */
+export function updateKnowledge(
+  change: (k: { products: Product[]; qa: QAItem[] }) => { products: Product[]; qa: QAItem[] },
+  message: string,
+) {
+  return withFileLock(KNOWLEDGE_FILE, async () => {
+    if (files.kind === "local-file" && process.env.VERCEL) throw new Error(STORAGE_MISSING_MESSAGE);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const current = await getKnowledge();
+      const next = change({ products: current.products, qa: current.qa });
+      try {
+        await files.write(KNOWLEDGE_FILE, await buildWorkbook(next.products, next.qa), current.sha, message);
+        knowledgeCache = null;
+        return next;
+      } catch (e) {
+        if (e instanceof FileConflictError && attempt < 3) {
+          knowledgeCache = null;
+          continue; // 그 사이 다른 사람이 고쳤으면 다시 읽고 재시도
+        }
+        throw e;
+      }
+    }
+    throw new Error("엑셀 저장이 계속 겹쳐서 실패했어요. 잠시 후 다시 시도해 주세요.");
+  });
+}
+
+export async function getKnowledgeExcel(): Promise<Buffer> {
+  const remote = await files.read(KNOWLEDGE_FILE);
+  return remote ? remote.content : fs.readFile(BUNDLED_EXCEL);
+}
+
+// ---------- 규칙 ----------
 export async function getRules(): Promise<Rules> {
-  return { ...DEFAULT_RULES, ...((await getKV<Rules>("rules")) ?? {}) };
+  return { ...DEFAULT_RULES, ...((await readJson<Rules>(RULES_FILE)) ?? {}) };
 }
 export async function saveRules(rules: Rules) {
-  await setKV("rules", rules);
+  await updateJson<Rules>(RULES_FILE, () => rules, "챗봇 규칙 수정");
 }
 
-// ---------- 사용자 ----------
+// ---------- 사용자 + 대화 기록 ----------
+/** 같은 이메일은 항상 같은 ID (파일 이름) 가 됩니다. */
+export function userIdFromEmail(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 24);
+}
+
+const recordCache = new Map<string, { sha: string; record: UserRecord }>();
+
+async function readUserRecord(id: string): Promise<UserRecord | null> {
+  if (!/^[a-f0-9]{24}$/.test(id)) return null;
+  return readJson<UserRecord>(userFile(id));
+}
+
 export async function getUser(id: string): Promise<ChatUser | null> {
-  if (redis) return (await redis.hget<ChatUser>("users", id)) ?? null;
-  return (await readLocal()).users[id] ?? null;
+  return (await readUserRecord(id))?.user ?? null;
 }
 
-export async function findUserByEmail(email: string): Promise<ChatUser | null> {
-  if (redis) {
-    const id = await redis.get<string>(`user-email:${email}`);
-    return id ? getUser(id) : null;
-  }
-  return Object.values((await readLocal()).users).find((u) => u.email === email) ?? null;
+export async function getUserWithMessages(id: string): Promise<UserRecord | null> {
+  return readUserRecord(id);
 }
 
-export async function saveUser(user: ChatUser) {
-  if (redis) {
-    await redis.hset("users", { [user.id]: user });
-    await redis.set(`user-email:${user.email}`, user.id);
-    return;
-  }
-  await updateLocal((db) => {
-    db.users[user.id] = user;
-  });
+export async function getMessages(id: string): Promise<ChatMessage[]> {
+  return (await readUserRecord(id))?.messages ?? [];
 }
 
-export async function listUsers(): Promise<ChatUser[]> {
-  const users = redis
-    ? Object.values((await redis.hgetall<Record<string, ChatUser>>("users")) ?? {})
-    : Object.values((await readLocal()).users);
-  return users.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
+/** 입장: 처음이면 만들고, 이미 있으면 이름과 최근 접속 시각만 바꿉니다. */
+export async function upsertUser(name: string, email: string): Promise<ChatUser> {
+  const id = userIdFromEmail(email);
+  const now = new Date().toISOString();
+  const rec = await updateJson<UserRecord>(
+    userFile(id),
+    (cur) =>
+      cur
+        ? { ...cur, user: { ...cur.user, name, lastActiveAt: now } }
+        : { user: { id, name, email, createdAt: now, lastActiveAt: now, warnings: 0, blocked: false }, messages: [] },
+    `입장: ${name}`,
+  );
+  return rec.user;
+}
+
+/** 대화 저장 + 사용자 상태 변경을 한 번에 (파일 1개라 한 번만 저장) */
+export async function saveChatTurn(id: string, msgs: ChatMessage[], changeUser: (u: ChatUser) => ChatUser) {
+  return updateJson<UserRecord>(
+    userFile(id),
+    (cur) => {
+      if (!cur) throw new Error("사용자를 찾을 수 없습니다.");
+      return { user: changeUser(cur.user), messages: [...cur.messages, ...msgs] };
+    },
+    `대화 기록`,
+  );
+}
+
+export async function updateUser(id: string, change: (u: ChatUser) => ChatUser, message: string) {
+  return (
+    await updateJson<UserRecord>(
+      userFile(id),
+      (cur) => {
+        if (!cur) throw new Error("사용자를 찾을 수 없습니다.");
+        return { ...cur, user: change(cur.user) };
+      },
+      message,
+    )
+  ).user;
 }
 
 export async function deleteUser(id: string) {
-  const user = await getUser(id);
-  if (redis) {
-    await redis.hdel("users", id);
-    await redis.del(`msgs:${id}`);
-    if (user) await redis.del(`user-email:${user.email}`);
-    return;
-  }
-  await updateLocal((db) => {
-    delete db.users[id];
-    delete db.messages[id];
-  });
+  await files.remove(userFile(id), "사용자 삭제");
+  recordCache.delete(id);
 }
 
-// ---------- 대화 기록 ----------
-export async function getMessages(userId: string): Promise<ChatMessage[]> {
-  if (redis) return (await redis.lrange<ChatMessage>(`msgs:${userId}`, 0, -1)) ?? [];
-  return (await readLocal()).messages[userId] ?? [];
-}
-
-export async function appendMessages(userId: string, msgs: ChatMessage[]) {
-  if (redis) {
-    await redis.rpush(`msgs:${userId}`, ...msgs);
-    return;
+export async function listUsers(): Promise<ChatUser[]> {
+  const entries = (await files.list("users")).filter((f) => f.name.endsWith(".json"));
+  const users: ChatUser[] = [];
+  // 파일 버전(sha)이 그대로면 이전에 읽은 내용을 다시 씁니다. 바뀐 파일만 8개씩 나눠 읽어요.
+  for (let i = 0; i < entries.length; i += 8) {
+    const chunk = await Promise.all(
+      entries.slice(i, i + 8).map(async ({ name, sha }) => {
+        const id = name.replace(/\.json$/, "");
+        const cached = recordCache.get(id);
+        if (cached?.sha === sha) return cached.record.user;
+        const rec = await readUserRecord(id);
+        if (rec) recordCache.set(id, { sha, record: rec });
+        return rec?.user ?? null;
+      }),
+    );
+    users.push(...chunk.filter((u): u is ChatUser => Boolean(u)));
   }
-  await updateLocal((db) => {
-    db.messages[userId] = [...(db.messages[userId] ?? []), ...msgs];
-  });
+  return users.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
 }

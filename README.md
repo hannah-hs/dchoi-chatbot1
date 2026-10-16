@@ -12,8 +12,11 @@ Claude **Sonnet 5.5** (`claude-sonnet-5-5`) 모델로 동작합니다.
 
 ## 🧸 내가 할 일 (순서대로 따라 하세요)
 
-> GitHub 연결과 코드 올리기는 이미 끝났어요. → https://github.com/hannah-hs/dchoi-chatbot1
-> 이제 **Anthropic API 키 만들기 → Vercel 연결 → 저장소(Redis) 연결** 세 가지만 하면 됩니다.
+> GitHub 연결과 코드 올리기는 이미 끝났어요.
+> - 코드 레포 (공개): https://github.com/hannah-hs/dchoi-chatbot1
+> - 데이터 레포 (**비공개**): https://github.com/hannah-hs/dchoi-chatbot1-data ← 대화 기록·규칙·학습 엑셀이 여기에 저장돼요
+>
+> 따로 데이터베이스는 쓰지 않아요. 이제 **API 키 만들기 → GitHub 토큰 만들기 → Vercel 연결** 세 가지만 하면 됩니다.
 
 ### 1단계. Anthropic API 키 만들기 (5분)
 
@@ -24,7 +27,20 @@ Claude **Sonnet 5.5** (`claude-sonnet-5-5`) 모델로 동작합니다.
 5. (선택) 내 컴퓨터에서도 테스트하고 싶다면, 이 폴더의 `.env.local` 파일을 열어 `ANTHROPIC_API_KEY=` 뒤에 붙여넣고, `ADMIN_PASSWORD=` 뒤에 원하는 비밀번호를 적습니다.
    - `.env.local` 은 GitHub 에 올라가지 않는 비밀 파일이에요.
 
-### 2단계. Vercel 에 연결하기 (10분)
+### 2단계. GitHub 토큰 만들기 (5분)
+
+챗봇이 비공개 데이터 레포에 대화 기록을 저장할 수 있게 해주는 "열쇠"예요. 이 열쇠는 **데이터 레포 하나만** 열 수 있게 만들어요.
+
+1. GitHub 오른쪽 위 프로필 사진 → **Settings** → 왼쪽 맨 아래 **Developer settings**.
+2. **Personal access tokens → Fine-grained tokens** → **Generate new token**.
+3. 아래처럼 입력합니다.
+   - Token name: `dchoi-chatbot`
+   - Expiration: **No expiration** (또는 1년 — 만료되면 챗봇 저장이 멈추니 날짜를 꼭 기억하세요)
+   - Repository access: **Only select repositories** → **dchoi-chatbot1-data** 하나만 선택
+   - Permissions → Repository permissions → **Contents** 를 **Read and write** 로 변경 (Metadata 는 자동으로 Read-only)
+4. 맨 아래 **Generate token** → `github_pat_...` 로 시작하는 글자를 **복사해서 메모장에 잠깐 붙여둡니다.** (다시 볼 수 없어요!)
+
+### 3단계. Vercel 에 연결하기 (10분)
 
 Vercel 은 GitHub 에 있는 코드를 가져가서 인터넷 주소(웹사이트)로 만들어 주는 곳이에요.
 
@@ -32,27 +48,17 @@ Vercel 은 GitHub 에 있는 코드를 가져가서 인터넷 주소(웹사이�
 2. 대시보드에서 **Add New… → Project** 를 누릅니다.
 3. 목록에서 **dchoi-chatbot1** 옆의 **Import** 버튼을 누릅니다.
    - 목록에 안 보이면 **Adjust GitHub App Permissions** 를 눌러 이 레포를 허용해 주세요.
-4. 설정 화면에서 **Environment Variables** 를 펼치고, 아래 3개를 하나씩 추가합니다. (Key 칸에 이름, Value 칸에 값)
+4. 설정 화면에서 **Environment Variables** 를 펼치고, 아래 4개를 하나씩 추가합니다. (Key 칸에 이름, Value 칸에 값)
+   - 이미 배포했다면: 프로젝트 → **Settings → Environment Variables** 에서 추가한 뒤 **Redeploy** 하세요.
 
    | Key (이름) | Value (값) |
    |---|---|
    | `ANTHROPIC_API_KEY` | 1단계에서 복사한 `sk-ant-...` 키 |
    | `ADMIN_PASSWORD` | 운영자 페이지 비밀번호 (내가 정하기, 8자 이상 추천) |
    | `SESSION_SECRET` | 아무 긴 글자 (예: 고양이이름+생일+아무숫자 30자 이상) |
+   | `GITHUB_TOKEN` | 2단계에서 복사한 `github_pat_...` 토큰 |
 
 5. **Deploy** 버튼을 누르고 1~2분 기다리면 축하 화면이 나옵니다. 🎉
-
-### 3단계. 대화 기록 저장소(Redis) 연결하기 (5분) — 꼭 해야 해요!
-
-Vercel 은 파일을 저장해 두지 못해서, 대화 기록·Q&A 수정·규칙 수정을 담을 **무료 저장소**가 필요해요.
-
-1. Vercel 에서 방금 만든 프로젝트를 엽니다.
-2. 위쪽 탭에서 **Storage** → **Create Database** (또는 Browse Marketplace) 를 누릅니다.
-3. **Upstash** → **Upstash for Redis** 를 고르고 **Continue**.
-4. 지역(Region)은 미국 고객이 많으니 **Washington, D.C. (us-east-1)** 처럼 미국 지역을 고르고, 요금제는 **Free** 를 선택 → **Create**.
-5. "Connect to project" 화면에서 **dchoi-chatbot1** 이 선택된 상태로 **Connect** 를 누릅니다.
-   - 그러면 `KV_REST_API_URL`, `KV_REST_API_TOKEN` 같은 값이 자동으로 들어가요. 직접 입력할 필요 없어요.
-6. 위쪽 탭 **Deployments** → 맨 위 항목 오른쪽 **⋯** → **Redeploy** 를 눌러 한 번 다시 배포합니다.
 
 ### 4단계. 확인하기
 
@@ -60,12 +66,20 @@ Vercel 은 파일을 저장해 두지 못해서, 대화 기록·Q&A 수정·규�
 2. 이름과 이메일을 넣고 "돌 아기에게 좋은 전집 추천해 주세요" 를 눌러 답이 오는지 봅니다.
 3. 주소 끝에 `/admin` 을 붙여 들어가고, 2단계에서 정한 `ADMIN_PASSWORD` 로 로그인합니다.
    - **대화 기록** 탭에 방금 대화가 보이면 성공!
-   - 운영자 화면에 "내 컴퓨터 파일에 저장 중" 이라는 안내가 보이면 3단계(Redis)가 안 된 거예요.
+   - 데이터 레포(dchoi-chatbot1-data)의 `users/` 폴더에 파일이 생기면 저장도 성공이에요.
+   - 운영자 화면에 "내 컴퓨터 파일에 저장 중" 이라는 안내가 보이면 `GITHUB_TOKEN` 이 빠진 거예요.
 
 ### 🔧 안 될 때 점검하기
 
 사이트 주소 끝에 `/api/health` 를 붙여서 열어 보세요. (예: `https://내주소.vercel.app/api/health`)
 필요한 설정마다 ✅ / ❌ 가 표시돼요. ❌ 인 항목을 위 단계에서 다시 설정한 뒤 **Redeploy** 하면 됩니다.
+
+전체 기능 자동 점검(챗봇 답변·기억·규칙 반영·Q&A 반영·경고/차단·운영자 기록·엑셀, 32개 항목)도 할 수 있어요.
+Claude 에게 "배포된 사이트 전체 테스트 해줘" 라고 하면 아래 명령을 대신 실행해 줘요. (1회 약 $0.5~1)
+
+```bash
+BASE_URL=https://내주소.vercel.app ADMIN_PASSWORD=운영자비밀번호 npm run test:e2e
+```
 
 ### 앞으로 코드가 바뀌면?
 
@@ -76,7 +90,10 @@ GitHub 의 `main` 에 새 코드가 올라가면 **Vercel 이 자동으로 다�
 
 ## 📚 챗봇이 아는 내용 (학습 데이터)
 
-- `data/dchoi09_전집_학습데이터.xlsx` — 엑셀 파일 (시트 2개)
+- 챗봇은 **GitHub 에 올라간 엑셀 파일**을 읽어서 답해요.
+  - 처음에는 코드 레포의 `data/dchoi09_전집_학습데이터.xlsx` 를 읽고,
+  - 운영자가 Q&A 를 고치거나 엑셀을 올리면 데이터 레포의 `knowledge/학습데이터.xlsx` 가 만들어져서 그때부터는 그 파일을 읽어요.
+- 엑셀 파일 구성 (시트 2개)
   - **상품목록**: 상품명, 출판사, 연령, 연령 카테고리, 구성, 세이펜, 배송가/픽업가, 판매 여부, 태그, 리뷰 수·평점·대표 리뷰, 상세 설명, 상세페이지 주소
   - **Q&A**: 공통 질문 10개 + 상품별 질문(연령·구성·가격·세이펜·후기) — 총 552개
 - 챗봇은 대화할 때마다 **현재 상품목록 + Q&A + 규칙** 을 함께 보고 답합니다.
@@ -95,7 +112,18 @@ npm run scrape
 npm run excel
 ```
 
-> ⚠️ 이미 Vercel 에서 운영자가 Q&A 를 고쳤다면, 저장소(Redis)의 내용이 우선이에요. 새 엑셀을 반영하려면 운영자 페이지 **엑셀 파일 → 업로드** 를 사용하세요.
+> ⚠️ 이미 운영자가 Q&A 를 고쳤다면 데이터 레포의 엑셀이 우선이에요. 새로 수집한 엑셀을 반영하려면 운영자 페이지 **엑셀 파일 → 업로드** 를 사용하세요.
+
+### 데이터 레포(비공개)에 저장되는 파일
+
+| 파일 | 내용 |
+|---|---|
+| `knowledge/학습데이터.xlsx` | 챗봇이 쓰는 학습 엑셀 (운영자가 고친 Q&A 포함) |
+| `config/rules.json` | 챗봇 규칙 4가지 + 자동 차단 경고 횟수 |
+| `users/<번호>.json` | 사용자 1명 = 파일 1개 (이름, 이메일, 경고·차단 상태, 대화 전체) |
+
+- 저장할 때마다 GitHub 에 "대화 기록", "Q&A 수정" 같은 커밋이 남아서, 언제 무엇이 바뀌었는지 볼 수 있어요.
+- 고객 개인정보(이름·이메일·대화)가 있으니 **데이터 레포는 꼭 비공개(Private)로 유지**하세요.
 
 ---
 
@@ -125,9 +153,11 @@ npm run excel
 
 ## 🧑‍💻 개발자용 메모
 
-- Next.js 16 (App Router) + TypeScript, `@anthropic-ai/sdk`, `@upstash/redis`, `exceljs`, `zod`
+- Next.js 16 (App Router) + TypeScript, `@anthropic-ai/sdk`, `exceljs`, `zod` — 별도 데이터베이스 없음
 - `lib/claude.ts` — Claude 호출 (구조화된 출력으로 답변 + 기분 + 위험도 함께 받음, 상품 정보는 프롬프트 캐시, 안전 필터 거절 시 서버 측 fallback)
-- `lib/store.ts` — 저장소 (Redis 환경변수가 있으면 Redis, 없으면 `.data/db.json`)
+- `lib/files.ts` — 파일 보관함 (`GITHUB_TOKEN` 이 있으면 GitHub 데이터 레포 Contents API, 없으면 `.data/`). 동시 저장은 sha 비교 후 다시 시도
+- `lib/store.ts` — 엑셀/규칙/사용자/대화 읽기·쓰기 (데이터 레포 주소는 `GITHUB_DATA_REPO`, 기본값 `hannah-hs/dchoi-chatbot1-data`)
+- `scripts/e2e.ts` — 전체 기능 자동 점검 (`npm run test:e2e`)
 - `lib/default-rules.ts` — 규칙 처음 값
 - `scripts/scrape.ts` — dchoi09.com 수집 (Shopify 공개 JSON + 상세페이지)
 - 내 컴퓨터에서 실행: `npm install` → `npm run dev` → http://localhost:3000 (Node.js 20 이상 필요)

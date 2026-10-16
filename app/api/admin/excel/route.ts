@@ -1,13 +1,13 @@
-// 운영자: 현재 학습 데이터(상품목록 + Q&A)를 엑셀로 내려받기 / 엑셀을 올려서 교체하기
+// 운영자: 챗봇이 쓰는 학습 엑셀(상품목록 + Q&A) 내려받기 / 엑셀을 올려서 교체하기
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/admin-guard";
-import { buildWorkbook, readWorkbook } from "@/lib/excel";
-import { getProducts, getQA, saveProducts, saveQA } from "@/lib/store";
+import { readWorkbook } from "@/lib/excel";
+import { getKnowledgeExcel, updateKnowledge } from "@/lib/store";
 
 export async function GET() {
   const denied = await requireAdmin();
   if (denied) return denied;
-  const buf = await buildWorkbook(await getProducts(), await getQA());
+  const buf = await getKnowledgeExcel();
   const name = encodeURIComponent(`dchoi09_전집_학습데이터_${new Date().toISOString().slice(0, 10)}.xlsx`);
   return new NextResponse(new Uint8Array(buf), {
     headers: {
@@ -33,7 +33,14 @@ export async function POST(req: Request) {
   if (!products?.length && !qa?.length) {
     return NextResponse.json({ error: "'상품목록' 또는 'Q&A' 시트를 찾지 못했습니다." }, { status: 400 });
   }
-  if (products?.length) await saveProducts(products);
-  if (qa?.length) await saveQA(qa);
-  return NextResponse.json({ products: products?.length ?? 0, qa: qa?.length ?? 0 });
+  try {
+    // 한쪽 시트만 있으면 그 시트만 바꾸고, 다른 쪽은 그대로 둡니다.
+    const next = await updateKnowledge(
+      (k) => ({ products: products?.length ? products : k.products, qa: qa?.length ? qa : k.qa }),
+      "엑셀 업로드로 학습 데이터 교체",
+    );
+    return NextResponse.json({ products: next.products.length, qa: next.qa.length });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+  }
 }
