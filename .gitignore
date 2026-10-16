@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+.data/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+
+# 비밀 정보가 들어있는 파일은 GitHub 에 올리지 않습니다
+.env
+.env.local
+.env*.local
+
+# 내 컴퓨터 전용 설정
+.claude/
