@@ -9,11 +9,23 @@ import seedQA from "@/data/qa.json";
 import { DEFAULT_RULES } from "./default-rules";
 import type { ChatMessage, ChatUser, Product, QAItem, Rules } from "./types";
 
-const redisUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-const redisToken = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+// Vercel 에서 Upstash 를 연결할 때 이름 앞에 다른 글자(예: STORAGE_)를 붙였어도 찾을 수 있게 끝부분으로 찾습니다.
+function findEnv(suffixes: string[]): string | undefined {
+  for (const suffix of suffixes) {
+    if (process.env[suffix]) return process.env[suffix];
+    const key = Object.keys(process.env).find((k) => k.endsWith(`_${suffix}`) && process.env[k]);
+    if (key) return process.env[key];
+  }
+  return undefined;
+}
+const redisUrl = findEnv(["KV_REST_API_URL", "UPSTASH_REDIS_REST_URL"]);
+const redisToken = findEnv(["KV_REST_API_TOKEN", "UPSTASH_REDIS_REST_TOKEN"]);
 const redis = redisUrl && redisToken ? new Redis({ url: redisUrl, token: redisToken }) : null;
 
 export const storageMode = redis ? "redis" : "local-file";
+
+export const STORAGE_MISSING_MESSAGE =
+  "저장소(Upstash Redis)가 연결되지 않았습니다. Vercel 프로젝트 → Storage 에서 Upstash for Redis 를 연결한 뒤 Redeploy 해 주세요.";
 
 // ---------- 내 컴퓨터용 파일 저장 ----------
 interface LocalDB {
@@ -34,7 +46,7 @@ async function readLocal(): Promise<LocalDB> {
 let localQueue: Promise<unknown> = Promise.resolve();
 function updateLocal(change: (db: LocalDB) => void): Promise<void> {
   if (process.env.VERCEL) {
-    throw new Error("Vercel 에서는 Upstash Redis 연결이 필요합니다. 안내서(README)의 'Redis 연결' 단계를 확인하세요.");
+    return Promise.reject(new Error(STORAGE_MISSING_MESSAGE));
   }
   const run = localQueue.then(async () => {
     const db = await readLocal();

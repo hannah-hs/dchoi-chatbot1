@@ -31,7 +31,12 @@ export async function POST(req: Request) {
   } else {
     user = { id: randomUUID(), name, email, createdAt: now, lastActiveAt: now, warnings: 0, blocked: false };
   }
-  await saveUser(user);
+  try {
+    await saveUser(user);
+  } catch (error) {
+    console.error("saveUser failed", error);
+    return NextResponse.json({ error: (error as Error).message || "저장에 실패했어요. 잠시 후 다시 시도해 주세요." }, { status: 500 });
+  }
   await setUserSession(user.id);
   return NextResponse.json({ ok: true });
 }

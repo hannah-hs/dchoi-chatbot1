@@ -49,7 +49,11 @@ export async function POST(req: Request) {
     { role: "user", content: text, at: now, mood: result.mood, risk: result.risk, riskReason: result.riskReason },
     { role: "assistant", content: reply, at: new Date().toISOString() },
   ];
-  await Promise.all([appendMessages(user.id, msgs), saveUser(updated)]);
+  try {
+    await Promise.all([appendMessages(user.id, msgs), saveUser(updated)]);
+  } catch (error) {
+    console.error("save chat failed", error);
+  }
 
   return NextResponse.json({ reply, blocked: updated.blocked });
 }

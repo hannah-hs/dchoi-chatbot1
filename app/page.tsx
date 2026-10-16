@@ -32,6 +32,7 @@ export default function Home() {
         setMe(d.user);
         setMessages(d.messages ?? []);
       })
+      .catch(() => setMe(null))
       .finally(() => setLoading(false));
   }, []);
 
@@ -61,15 +62,20 @@ function Join({ onJoined }: { onJoined: (u: Me) => void }) {
     e.preventDefault();
     setBusy(true);
     setError("");
-    const res = await fetch("/api/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
-    });
-    const data = await res.json();
-    setBusy(false);
-    if (!res.ok) return setError(data.error ?? "다시 시도해 주세요.");
-    onJoined({ name: name.trim(), email: email.trim(), blocked: false });
+    try {
+      const res = await fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) return setError(data.error ?? `서버 오류가 발생했어요. (${res.status}) 잠시 후 다시 시도해 주세요.`);
+      onJoined({ name: name.trim(), email: email.trim(), blocked: false });
+    } catch {
+      setError("인터넷 연결을 확인하고 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -164,7 +170,11 @@ function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
       });
-      const data = await res.json();
+      const data = (await res.json().catch(() => ({ error: `서버 오류가 발생했어요. (${res.status})` }))) as {
+        reply?: string;
+        error?: string;
+        blocked?: boolean;
+      };
       if (res.status === 401) return setMe(null);
       setMessages((m) => [...m, { role: "assistant", content: data.reply ?? data.error ?? "다시 시도해 주세요." }]);
       if (data.blocked) setBlocked(true);
